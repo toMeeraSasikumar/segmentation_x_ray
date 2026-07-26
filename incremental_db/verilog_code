@@ -1,0 +1,283 @@
+//top module 
+module finalproj( 
+input wire CLOCK_50, // 50 MHz clock 
+input wire [10:0] sw, // 11 switches: sw[0]...sw[10], 
+sw[10]=original image select 
+output wire VGA_CLK, // Pixel clock (148.5 MHz) 
+output wire VGA_HS, // Horizontal sync 
+output wire VGA_VS, // Vertical sync 
+output wire [7:0] VGA_R, // Red channel (8-bit) 
+output wire [7:0] VGA_G, // Green channel (8-bit) 
+output wire [7:0] VGA_B, // Blue channel (8-bit) 
+output wire VGA_BLANK_N, // Blanking control 
+output wire VGA_SYNC_N, // Composite sync (tie low) 
+); 
+wire clk148; 
+wire [10:0] x, y; 
+wire video_on; 
+assign VGA_CLK = clk148; 
+assign VGA_SYNC_N = 1'b0; 
+// PLL: Generates 148.5 MHz pixel clock from 50 MHz input 
+pll_148mhz pll_inst ( 
+.inclk0(CLOCK_50), 
+.c0(clk148) 
+); 
+// VGA controller for 1920x1080@60Hz 
+vga_controller_1080p vga ( 
+.clk(clk148), 
+.reset(1'b0), 
+.hsync(VGA_HS), 
+.vsync(VGA_VS), 
+.x(x), 
+.y(y), 
+.video_on(video_on) 
+); 
+assign VGA_BLANK_N = video_on; 
+// --- Image Scaling Parameters --- 
+localparam SCALE_FACTOR = 4; 
+localparam IMG_W = 128; 
+localparam IMG_H = 128; 
+localparam SCALED_W = IMG_W * SCALE_FACTOR; 
+localparam SCALED_H = IMG_H * SCALE_FACTOR; 
+localparam H_START = (1920 - SCALED_W) / 2; 
+localparam V_START = (1080 - SCALED_H) / 2; 
+// --- Scaled Image Address Logic --- 
+wire [23:0] img_pixel; 
+wire [7:0] img_r, img_g, img_b; 
+assign img_r = img_pixel[23:16]; 
+assign img_g = img_pixel[15:8]; 
+assign img_b = img_pixel[7:0]; 
+wire [10:0] orig_x = (x >= H_START && x < H_START + SCALED_W) ? 
+(x - H_START) / SCALE_FACTOR : 11'b0; 
+wire [10:0] orig_y = (y >= V_START && y < V_START + SCALED_H) ? 
+(y - V_START) / SCALE_FACTOR : 11'b0; 
+wire [13:0] img_addr = (x >= H_START && x < H_START + SCALED_W 
+&& 
+y >= V_START && y < V_START + SCALED_H) ? 
+orig_x + orig_y * IMG_W : 14'b0; 
+// Image ROM: stores 24-bit RGB image data 
+image_rom img_rom ( 
+.clock(clk148), 
+.address(img_addr), 
+.q(img_pixel) 
+); 
+// --- Contrast Enhancement (applied to ROM output) --- 
+wire [7:0] ce_r, ce_g, ce_b; 
+ContrastEnhancer contrast_inst ( 
+.R_in(img_r), 
+.G_in(img_g), 
+.B_in(img_b), 
+.R_out(ce_r), 
+.G_out(ce_g), 
+.B_out(ce_b) 
+); 
+// --- Combine enhanced channels into 24-bit pixel for 
+segmentation --- 
+wire [23:0] ce_pixel; 
+assign ce_pixel = {ce_r, ce_g, ce_b}; 
+// --- Nearest centroid segmentation (10 clusters) --- 
+wire [3:0] pixel_class; 
+nearest_centroid_segment #( 
+.CENTROID0(24'h4df35f), 
+.CENTROID1(24'ha0bdff), 
+.CENTROID2(24'h0a1f6c), 
+.CENTROID3(24'h1950fa), 
+.CENTROID4(24'hffe6e5), 
+.CENTROID5(24'hadffbb), 
+.CENTROID6(24'hec744a), 
+.CENTROID7(24'h5689ff), 
+.CENTROID8(24'h1f5c27), 
+.CENTROID9(24'hffc6b3) 
+) ncentroid_inst ( 
+.pixel(ce_pixel), 
+.class(pixel_class) 
+); 
+// --- Color mapping for 10 classes --- 
+wire [7:0] color_r, color_g, color_b; 
+color_map10 cmap_inst ( 
+.pixel(pixel_class), 
+.r(color_r), 
+.g(color_g), 
+.b(color_b) 
+); 
+// --- VGA Output with Switch Masking and Original Image Select --- 
+assign VGA_R = video_on && (x >= H_START && x < H_START + 
+SCALED_W && 
+y >= V_START && y < V_START + SCALED_H) ? 
+(sw[10] ? img_r : (sw[pixel_class] ? color_r : 8'b0)) : 8'b0; 
+assign VGA_G = video_on && (x >= H_START && x < H_START + 
+SCALED_W && 
+y >= V_START && y < V_START + SCALED_H) ? 
+(sw[10] ? img_g : (sw[pixel_class] ? color_g : 8'b0)) : 8'b0; 
+assign VGA_B = video_on && (x >= H_START && x < H_START + 
+SCALED_W && 
+y >= V_START && y < V_START + SCALED_H) ? 
+(sw[10] ? img_b : (sw[pixel_class] ? color_b : 8'b0)) : 8'b0; 
+// ... (rest of your code for cluster counting, HEX display, 
+etc.) ... 
+endmodule 
+//color mapping 
+module color_map10 ( 
+input wire [3:0] pixel, 
+output reg [7:0] r, g, b 
+); 
+always @(*) begin 
+case (pixel) 
+4'd0: {r, g, b} = 24'h4df35f; // Blue 
+4'd1: {r, g, b} = 24'ha0bdff; // Green 
+4'd2: {r, g, b} = 24'h0a1f6c; // Yellow 
+4'd3: {r, g, b} = 24'h1950fa; // Gray 
+4'd4: {r, g, b} = 24'hffe6e5; // Red 
+4'd5: {r, g, b} = 24'hadffbb; // Cyan 
+4'd6: {r, g, b} = 24'hec744a; // Deep Blue 
+4'd7: {r, g, b} = 24'h5689ff; // White 
+4'd8: {r, g, b} = 24'h1f5c27; // Orange 
+4'd9: {r, g, b} = 24'hffc6b3; // Purple 
+default: {r, g, b} = {8'h00, 8'h00, 8'h00}; // Black 
+endcase 
+end 
+endmodule 
+//contrast enhancing 
+module ContrastEnhancer ( 
+input wire [7:0] R_in, 
+input wire [7:0] G_in, 
+input wire [7:0] B_in, 
+output reg [7:0] R_out, 
+output reg [7:0] G_out, 
+output reg [7:0] B_out 
+); 
+reg [15:0] R_amp, G_amp, B_amp; 
+reg [15:0] R_att, G_att, B_att; 
+always @(*) begin 
+R_amp = (R_in * 24) / 10; // Amplify by 1.7 
+G_amp = (G_in * 24) / 10; 
+B_amp = (B_in * 24) / 10; 
+R_att = (R_in * 9) / 10; // Attenuate by 0.9 
+G_att = (G_in * 9) / 10; 
+B_att = (B_in * 9) / 10; 
+if (R_in >= G_in && R_in >= B_in) begin 
+R_out = (R_amp > 255) ? 8'd255 : R_amp[7:0]; 
+G_out = G_att[7:0]; 
+B_out = B_att[7:0]; 
+end 
+else if (G_in >= R_in && G_in >= B_in) begin 
+R_out = R_att[7:0]; 
+G_out = (G_amp > 255) ? 8'd255 : G_amp[7:0]; 
+B_out = B_att[7:0]; 
+end 
+else begin 
+R_out = R_att[7:0]; 
+G_out = G_att[7:0]; 
+B_out = (B_amp > 255) ? 8'd255 : B_amp[7:0]; 
+end 
+end 
+endmodule 
+//segmenting 
+module nearest_centroid_segment #( 
+parameter [23:0] CENTROID0 = 24'h4df35f, 
+parameter [23:0] CENTROID1 = 24'ha0bdff, 
+parameter [23:0] CENTROID2 = 24'h0a1f6c, 
+parameter [23:0] CENTROID3 = 24'h1950fa, 
+parameter [23:0] CENTROID4 = 24'hffe6e5, 
+parameter [23:0] CENTROID5 = 24'hadffbb, 
+parameter [23:0] CENTROID6 = 24'hec744a, 
+parameter [23:0] CENTROID7 = 24'h5689ff, 
+parameter [23:0] CENTROID8 = 24'h1f5c27, 
+parameter [23:0] CENTROID9 = 24'hffc6b3 
+)( 
+input wire [23:0] pixel, 
+output reg [3:0] class 
+); 
+wire [7:0] r = pixel[23:16]; 
+wire [7:0] g = pixel[15:8]; 
+wire [7:0] b = pixel[7:0]; 
+// Extract centroid components 
+wire [7:0] c_r[9:0], c_g[9:0], c_b[9:0]; 
+assign {c_r[0], c_g[0], c_b[0]} = CENTROID0; 
+assign {c_r[1], c_g[1], c_b[1]} = CENTROID1; 
+assign {c_r[2], c_g[2], c_b[2]} = CENTROID2; 
+assign {c_r[3], c_g[3], c_b[3]} = CENTROID3; 
+assign {c_r[4], c_g[4], c_b[4]} = CENTROID4; 
+assign {c_r[5], c_g[5], c_b[5]} = CENTROID5; 
+assign {c_r[6], c_g[6], c_b[6]} = CENTROID6; 
+assign {c_r[7], c_g[7], c_b[7]} = CENTROID7; 
+assign {c_r[8], c_g[8], c_b[8]} = CENTROID8; 
+assign {c_r[9], c_g[9], c_b[9]} = CENTROID9; 
+// Compute squared distances for all centroids 
+wire [17:0] dist[9:0]; 
+genvar i; 
+generate 
+for (i = 0; i < 10; i = i + 1) begin : DIST_CALC 
+assign dist[i] = (r - c_r[i]) * (r - c_r[i]) + 
+(g - c_g[i]) * (g - c_g[i]) + 
+(b - c_b[i]) * (b - c_b[i]); 
+end 
+endgenerate 
+integer j; 
+reg [17:0] min_dist; 
+always @(*) begin 
+min_dist = dist[0]; 
+class = 4'd0; 
+for (j = 1; j < 10; j = j + 1) begin 
+if (dist[j] < min_dist) begin 
+min_dist = dist[j]; 
+class = j[3:0]; 
+end 
+end 
+end 
+endmodule 
+//vga controller 
+module vga_controller_1080p ( 
+input wire clk, // 148.5 MHz clock 
+input wire reset, // Active-high reset 
+output reg hsync, vsync, // Active low sync 
+output reg [10:0] x, y, // Current pixel position  
+output reg video_on // Active during display area 
+); 
+// Timing parameters for 1920x1080@60Hz 
+parameter H_DISPLAY = 1920; 
+parameter H_FRONT = 88; 
+parameter H_SYNC = 44; 
+parameter H_BACK = 148; 
+parameter H_TOTAL = H_DISPLAY + H_FRONT + H_SYNC + H_BACK; 
+parameter V_DISPLAY = 1080; 
+parameter V_FRONT = 4; 
+parameter V_SYNC = 5; 
+parameter V_BACK = 36; 
+parameter V_TOTAL = V_DISPLAY + V_FRONT + V_SYNC + V_BACK; 
+reg [11:0] h_count; // 0 to 2199 (12-bit) 
+reg [11:0] v_count; // 0 to 1124 (12-bit) 
+always @(posedge clk or posedge reset) begin 
+if (reset) begin 
+h_count <= 0; 
+v_count <= 0; 
+hsync <= 1'b1; // Deassert sync (active low) 
+vsync <= 1'b1; 
+video_on <= 1'b0; 
+x <= 0; 
+y <= 0; 
+end else begin 
+// Horizontal counter 
+if (h_count < H_TOTAL - 1) 
+h_count <= h_count + 1; 
+else begin 
+h_count <= 0; 
+// Vertical counter 
+if (v_count < V_TOTAL - 1) 
+v_count <= v_count + 1; 
+else 
+v_count <= 0; 
+end 
+// Generate sync signals (active low) 
+hsync <= ~((h_count >= H_DISPLAY + H_FRONT) && 
+(h_count < H_DISPLAY + H_FRONT + H_SYNC)); 
+vsync <= ~((v_count >= V_DISPLAY + V_FRONT) && 
+(v_count < V_DISPLAY + V_FRONT + V_SYNC)); 
+// Video on during active display area 
+video_on <= (h_count < H_DISPLAY) && (v_count < V_DISPLAY); 
+// Current pixel position 
+x <= (h_count < H_DISPLAY) ? h_count[10:0] : 11'd0; 
+y <= (v_count < V_DISPLAY) ? v_count[10:0] : 11'd0; 
+end 
+end 
+endmodule
